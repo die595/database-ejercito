@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 
-
 // ---- Types ----
 
 // Legacy type kept for backwards compat with lib/analysis.ts and lib/parse-excel.ts
@@ -147,7 +146,7 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
   const abortRef = useRef<AbortController | null>(null);
   const hasChecked = useRef(false);
 
-  // Load stats + map for given filters
+  // ---- ✅ Load data with validation to avoid blank dashboard ----
   const loadData = useCallback(async (f: Filters, isInitial: boolean = false) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -166,23 +165,38 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
       const mapData = await mapRes.json();
       if (controller.signal.aborted) return;
 
-      setStats(statsData);
-      setMapPoints(mapData.points ?? []);
-      setMapInfo({ total: mapData.total ?? 0, displayed: mapData.displayed ?? 0 });
-
-      // On initial load (no filters), store unique values for dropdowns
-      if (isInitial) {
-        setUniqueValues(deriveUniqueValues(statsData));
+      // ✅ VALIDACIÓN: Solo actualizar si la respuesta es válida
+      const isValid = statsData && typeof statsData === 'object' && !Array.isArray(statsData) && Object.keys(statsData).length > 0;
+      if (isValid) {
+        setStats(statsData);
+        setMapPoints(mapData.points ?? []);
+        setMapInfo({ total: mapData.total ?? 0, displayed: mapData.displayed ?? 0 });
+        if (isInitial) {
+          setUniqueValues(deriveUniqueValues(statsData));
+        }
+      } else {
+        // Si los datos son inválidos, mantener los anteriores (no hacer nada)
+        console.warn('⚠️ Datos inválidos recibidos, manteniendo los anteriores.');
+        // Si es la carga inicial y no hay datos, al menos asegurar que no se muestre loading eterno
+        if (isInitial) {
+          setIsDataLoaded(false);
+        }
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       console.error('Load data error:', err);
     } finally {
-      if (!controller.signal.aborted) setIsLoading(false);
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+        // Si es la inicial y ya tenemos datos, marcar como cargado
+        if (isInitial && stats) {
+          setIsDataLoaded(true);
+        }
+      }
     }
   }, []);
 
-  // Check for existing data on mount
+  // ---- Check for existing data on mount ----
   useEffect(() => {
     if (hasChecked.current) return;
     hasChecked.current = true;
@@ -204,17 +218,21 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [loadData]);
 
+  // ---- Set filters and load ----
   const setFilters = useCallback((newFilters: Filters) => {
     setFiltersRaw(newFilters);
     loadData(newFilters, false);
   }, [loadData]);
 
+  // ---- ✅ Refresh data with validation ----
   const refreshData = useCallback(async () => {
-    setIsDataLoaded(true);
-    setFiltersRaw(defaultFilters);
+    // Si ya tenemos datos, no los borramos durante la recarga
+    // Solo actualizamos cuando la respuesta sea válida
     await loadData(defaultFilters, true);
+    setIsDataLoaded(true);
   }, [loadData]);
 
+  // ---- Destroy data (only used in admin panel) ----
   const destroyData = useCallback(async () => {
     await fetch('/api/intel/destroy', { method: 'DELETE' });
     setIsDataLoaded(false);
