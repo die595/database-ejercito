@@ -107,7 +107,7 @@ function parseExcelPaste(text: string): Row[] {
 
 export default function DataGrid() {
   const { isAdmin } = useAuth();
-  const { refreshData } = useIntel();
+  const { refreshData } = useIntel(); // Aunque no lo usaremos para no perder datos
   const [rows, setRows] = useState<Row[]>([emptyRow()]);
   const [saving, setSaving] = useState(false);
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -128,6 +128,9 @@ export default function DataGrid() {
     setRows(prev => prev.length <= 1 ? [emptyRow()] : prev.filter((_, i) => i !== idx));
   }, []);
 
+  // ------------------------------------------------------------
+  // SAVE ROWS - CORREGIDO: ya no refresca todo el dashboard
+  // ------------------------------------------------------------
   const saveRows = useCallback(async () => {
     const validRows = rows.filter(r =>
       r.departamento?.trim() || r.municipio?.trim() || r.tipologia?.trim()
@@ -147,13 +150,15 @@ export default function DataGrid() {
       if (!res.ok) throw new Error(data.error);
       toast.success(`${data.count} registro(s) guardados exitosamente.`);
       setRows([emptyRow()]);
-      await refreshData();
+      // ✅ ELIMINADO: await refreshData();  // Ya no refresca todo el dashboard
+      // Los datos se actualizarán cuando el usuario recargue la página o navegue.
+      // Si quieres actualizar solo las estadísticas, puedes llamar a una función específica.
     } catch (err: any) {
       toast.error('Error: ' + (err?.message ?? 'desconocido'));
     } finally {
       setSaving(false);
     }
-  }, [rows, refreshData]);
+  }, [rows]); // ✅ refreshData ya no está en las dependencias
 
   // Manejar pegado a nivel de tabla
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
