@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useAuth } from '@/contexts/auth-context';
-import { Plus, Save, Trash2, Loader2, Lock } from 'lucide-react';
+import { Plus, Save, Trash2, Loader2, Lock, ClipboardPaste } from 'lucide-react';
 import { toast } from 'sonner';
 import { useIntel } from '@/contexts/intel-context';
 
@@ -40,44 +40,41 @@ function emptyRow(): Row {
 }
 
 // ------------------------------------------------------------
-// PARSEADOR POSICIONAL DEFINITIVO
+// FUNCIÓN DE PARSEO MEJORADA
 // ------------------------------------------------------------
 function parseExcelPaste(text: string): Row[] {
-  // 1. Dividir en líneas y limpiar \r
+  // 1. Limpiar y dividir en líneas
   const rawLines = text.split('\n').map(line => line.replace(/\r/g, '').trim()).filter(line => line !== '');
-  if (rawLines.length === 0) return [];
+  if (rawLines.length === 0) {
+    console.warn('⚠️ No hay líneas para parsear');
+    return [];
+  }
 
-  // 2. Detectar el separador más común en la primera línea
+  console.log('📄 Líneas recibidas:', rawLines);
+
+  // 2. Detectar el separador más probable (tabulador, coma, punto y coma, pipe)
   const separators = ['\t', ',', ';', '|'];
-  let separator = '\t'; // valor por defecto
+  let separator = '\t';
   for (const sep of separators) {
-    if (rawLines[0].includes(sep)) {
+    // Contar cuántas veces aparece el separador en la primera línea
+    const count = (rawLines[0].match(new RegExp(sep, 'g')) || []).length;
+    if (count > 1) {
       separator = sep;
       break;
     }
   }
-  // Si no se encontró ninguno, usamos tabulador (fallback)
   console.log('🔍 Separador detectado:', separator === '\t' ? 'TAB' : separator);
 
-  // 3. Intentar detectar si la primera línea es encabezado
-  const firstLine = rawLines[0].toLowerCase();
-  const headerKeywords = ['departamento', 'municipio', 'vereda', 'lat', 'lon', 'fecha', 'tipologia', 'informacion', 'fenomeno', 'medios', 'genero', 'estructura', 'respuesta', 'accion', 'res_tipo'];
-  const hasHeader = headerKeywords.some(kw => firstLine.includes(kw));
-
-  // 4. Definir las líneas de datos
-  const dataLines = hasHeader ? rawLines.slice(1) : rawLines;
-  if (dataLines.length === 0) return [];
-
-  // 5. Parsear cada línea de datos
+  // 3. Parsear cada línea como datos (ignoramos cualquier posible encabezado)
   const parsedRows: Row[] = [];
-  for (const line of dataLines) {
+  for (const line of rawLines) {
     // Dividir por el separador
     let values = line.split(separator).map(v => v.trim());
-    // Si el separador es coma, pero hay campos que contienen comas (ej: "INFORMACION, CON COMA"), esto fallará.
-    // Para simplificar, asumimos que el separador es consistente.
-
-    // Filtrar líneas que no tienen suficientes columnas (menos de 2)
-    if (values.length < 2) continue;
+    // Si la línea tiene menos de 2 valores, saltarla
+    if (values.length < 2) {
+      console.warn('⚠️ Línea con pocos valores, saltando:', line);
+      continue;
+    }
 
     // Crear fila vacía
     const row: Row = {};
@@ -87,7 +84,7 @@ function parseExcelPaste(text: string): Row[] {
     COLUMNS.forEach((col, idx) => {
       if (idx < values.length) {
         let val = values[idx] || '';
-        // Convertir coma decimal a punto
+        // Si el valor parece un número con coma decimal, reemplazar coma por punto
         if (/^-?\d+,\d+$/.test(val)) {
           val = val.replace(',', '.');
         }
@@ -95,9 +92,12 @@ function parseExcelPaste(text: string): Row[] {
       }
     });
 
-    // Solo agregar si tiene al menos un campo relevante
-    if (row.departamento || row.municipio || row.tipologia || row.latitud || row.longitud) {
+    // Verificar si la fila tiene al menos un campo relevante
+    const hasData = row.departamento || row.municipio || row.tipologia || row.latitud || row.longitud;
+    if (hasData) {
       parsedRows.push(row);
+    } else {
+      console.warn('⚠️ Fila sin datos relevantes, saltando:', row);
     }
   }
 
@@ -158,7 +158,11 @@ export default function DataGrid() {
   // Manejar pegado a nivel de tabla
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     const pastedText = e.clipboardData?.getData('text/plain');
-    if (!pastedText) return;
+    console.log('📋 Texto pegado (crudo):', pastedText);
+    if (!pastedText) {
+      toast.warning('No se detectó texto en el portapapeles.');
+      return;
+    }
 
     const parsedRows = parseExcelPaste(pastedText);
     if (parsedRows.length === 0) {
@@ -193,7 +197,10 @@ export default function DataGrid() {
           AGREGAR REGISTROS MANUALMENTE
         </h3>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400 hidden sm:inline">🖥️   Pega desde Excel (Ctrl+V)</span>
+          <span className="text-xs text-slate-400 hidden sm:inline flex items-center gap-1">
+            <ClipboardPaste className="w-4 h-4 text-emerald-400" />
+            Pega desde Excel (Ctrl+V) - solo datos, sin encabezados
+          </span>
           <button onClick={addRow} className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg text-xs transition-colors">
             <Plus className="w-3.5 h-3.5" /> Fila
           </button>
