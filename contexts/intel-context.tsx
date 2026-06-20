@@ -4,7 +4,6 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 
 // ---- Types ----
 
-// Legacy type kept for backwards compat with lib/analysis.ts and lib/parse-excel.ts
 export interface IntelRecord {
   id: number;
   departamento: string;
@@ -99,7 +98,6 @@ interface IntelContextType {
   refreshData: () => Promise<void>;
 }
 
-// ---- Defaults ----
 const defaultFilters: Filters = {
   fechaInicio: '', fechaFin: '', departamento: '',
   municipio: '', tipologia: '', fenomeno: '', estructura: '',
@@ -137,7 +135,7 @@ function deriveUniqueValues(stats: StatsData): UniqueValues {
 
 export function IntelProvider({ children }: { children: React.ReactNode }) {
   const [isDataLoaded, setIsDataLoaded] = useState(false);
-  const [isLoading, setIsLoading] = useState(true); // start true for initial check
+  const [isLoading, setIsLoading] = useState(true);
   const [filters, setFiltersRaw] = useState<Filters>(defaultFilters);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
@@ -146,7 +144,6 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
   const abortRef = useRef<AbortController | null>(null);
   const hasChecked = useRef(false);
 
-  // ---- ✅ Load data with validation to avoid blank dashboard ----
   const loadData = useCallback(async (f: Filters, isInitial: boolean = false) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -165,38 +162,50 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
       const mapData = await mapRes.json();
       if (controller.signal.aborted) return;
 
-      // ✅ VALIDACIÓN: Solo actualizar si la respuesta es válida
-      const isValid = statsData && typeof statsData === 'object' && !Array.isArray(statsData) && Object.keys(statsData).length > 0;
+      // ✅ Validación CORREGIDA: cualquier objeto con 'totalCount' es válido (aunque sea 0)
+      const isValid = statsData && typeof statsData === 'object' && !Array.isArray(statsData) && 'totalCount' in statsData;
+
       if (isValid) {
+        // Actualizar todos los estados con los nuevos datos
         setStats(statsData);
         setMapPoints(mapData.points ?? []);
         setMapInfo({ total: mapData.total ?? 0, displayed: mapData.displayed ?? 0 });
         if (isInitial) {
           setUniqueValues(deriveUniqueValues(statsData));
         }
+        // ✅ Siempre marcar como cargado si la respuesta es válida (aunque totalCount sea 0)
+        setIsDataLoaded(true);
       } else {
-        // Si los datos son inválidos, mantener los anteriores (no hacer nada)
-        console.warn('⚠️ Datos inválidos recibidos, manteniendo los anteriores.');
-        // Si es la carga inicial y no hay datos, al menos asegurar que no se muestre loading eterno
+        // Si la respuesta es inválida (error, formato incorrecto), solo en inicial se resetea
         if (isInitial) {
           setIsDataLoaded(false);
+          setStats(null);
+          setMapPoints([]);
+          setMapInfo({ total: 0, displayed: 0 });
+          setUniqueValues(emptyUniqueValues);
+        } else {
+          // En recargas posteriores, NO actualizar nada (mantener datos anteriores)
+          console.warn('⚠️ Datos inválidos recibidos, manteniendo estado anterior.');
         }
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
-      console.error('Load data error:', err);
+      console.error('Error en loadData:', err);
+      if (isInitial) {
+        setIsDataLoaded(false);
+        setStats(null);
+        setMapPoints([]);
+        setMapInfo({ total: 0, displayed: 0 });
+        setUniqueValues(emptyUniqueValues);
+      }
     } finally {
       if (!controller.signal.aborted) {
         setIsLoading(false);
-        // Si es la inicial y ya tenemos datos, marcar como cargado
-        if (isInitial && stats) {
-          setIsDataLoaded(true);
-        }
       }
     }
   }, []);
 
-  // ---- Check for existing data on mount ----
+  // ---- Verificar si hay datos al montar ----
   useEffect(() => {
     if (hasChecked.current) return;
     hasChecked.current = true;
@@ -210,29 +219,37 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
           await loadData(defaultFilters, true);
         } else {
           setIsLoading(false);
+          setIsDataLoaded(false);
         }
       } catch (err) {
-        console.error('Check data error:', err);
+        console.error('Error al verificar datos:', err);
         setIsLoading(false);
+        setIsDataLoaded(false);
       }
     })();
   }, [loadData]);
 
-  // ---- Set filters and load ----
+  // ---- Cambiar filtros ----
   const setFilters = useCallback((newFilters: Filters) => {
     setFiltersRaw(newFilters);
     loadData(newFilters, false);
   }, [loadData]);
 
-  // ---- ✅ Refresh data with validation ----
+  // ---- REFRESH: NO BORRA DATOS, solo recarga manteniendo los anteriores ----
   const refreshData = useCallback(async () => {
-    // Si ya tenemos datos, no los borramos durante la recarga
-    // Solo actualizamos cuando la respuesta sea válida
-    await loadData(defaultFilters, true);
-    setIsDataLoaded(true);
-  }, [loadData]);
+    // Resetear filtros a default
+    setFiltersRaw(defaultFilters);
+    // Recargar con filtros default
+    await loadData(defaultFilters, false);
+    // Si después de recargar no hay datos, marcamos como no cargado
+    if (!stats) {
+      setIsDataLoaded(false);
+    } else {
+      setIsDataLoaded(true);
+    }
+  }, [loadData, stats]);
 
-  // ---- Destroy data (only used in admin panel) ----
+  // ---- DESTROY: borra todo (solo para admin) ----
   const destroyData = useCallback(async () => {
     await fetch('/api/intel/destroy', { method: 'DELETE' });
     setIsDataLoaded(false);
@@ -245,9 +262,16 @@ export function IntelProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <IntelContext.Provider value={{
-      isDataLoaded, isLoading, filters, setFilters,
-      stats, mapPoints, mapInfo, uniqueValues,
-      destroyData, refreshData,
+      isDataLoaded,
+      isLoading,
+      filters,
+      setFilters,
+      stats,
+      mapPoints,
+      mapInfo,
+      uniqueValues,
+      destroyData,
+      refreshData,
     }}>
       {children}
     </IntelContext.Provider>
